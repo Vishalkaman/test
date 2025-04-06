@@ -1,143 +1,104 @@
+// App.jsx
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 
-const SERVER_URL = 'http://localhost:4000';
+const WS_URL = 'ws://localhost:4000';
+const API_URL = 'http://localhost:4000';
 
-function App() {
+export default function App() {
     const [username, setUsername] = useState('');
-    const [token, setToken] = useState('');
+    const [userId, setUserId] = useState(null);
     const [connected, setConnected] = useState(false);
-    const [messages, setMessages] = useState([]);
-    const [messageInput, setMessageInput] = useState('');
-    const [onlineUsers, setOnlineUsers] = useState([]);
-    const [typingUsers, setTypingUsers] = useState([]);
+    const [socketMessages, setSocketMessages] = useState([]);
+    const [input, setInput] = useState('');
+    const [users, setUsers] = useState([]);
+    const [typingUser, setTypingUser] = useState('');
 
-    const ws = useRef(null);
     const socketRef = useRef(null);
 
-    const login = async () => {
-        try {
-            const res = await axios.post(`${SERVER_URL}/login`, { username });
-            setToken(res.data.token);
-        } catch (err) {
-            alert('Login failed');
+    const handleJoin = async () => {
+        const res = await axios.post(`${API_URL}/connect`, { username });
+        const id = res.data.id;
+        setUserId(id);
+
+        const socket = new WebSocket(WS_URL);
+        socketRef.current = socket;
+
+        socket.onopen = () => {
+            socket.send(JSON.stringify({ type: 'init', id, username }));
+            setConnected(true);
+        };
+
+        socket.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+
+            if (data.type === 'message') {
+                setSocketMessages((prev) => [...prev, `${data.from}: ${data.text}`]);
+            }
+
+            if (data.type === 'user-joined') {
+                setSocketMessages((prev) => [...prev, `🔵 ${data.username} joined`]);
+                setUsers(data.users);
+            }
+
+            if (data.type === 'user-left') {
+                setSocketMessages((prev) => [...prev, `🔴 ${data.username} left`]);
+                setUsers(data.users);
+            }
+
+            if (data.type === 'typing') {
+                setTypingUser(data.isTyping ? data.from : '');
+            }
+        };
+
+        socket.onclose = () => {
+            setConnected(false);
+            setSocketMessages((prev) => [...prev, '🚫 Disconnected']);
+        };
+    };
+
+    const handleSend = () => {
+        if (input.trim()) {
+            socketRef.current?.send(JSON.stringify({ type: 'message', text: input }));
+            setSocketMessages((prev) => [...prev, `🟢 You: ${input}`]);
+            setInput('');
         }
     };
 
-    useEffect(() => {
-        if (token && !connected) {
-            const socket = new WebSocket(`ws://localhost:4000?token=${token}`);
-            socketRef.current = socket;
+    const handleTyping = (e) => {
+        setInput(e.target.value);
 
-            socket.onopen = () => {
-                setConnected(true);
-                console.log('🔗 Connected to server');
-            };
+        socketRef.current?.send(JSON.stringify({ type: 'typing', typing: true }));
 
-            socket.onmessage = (event) => {
-                const data = JSON.parse(event.data);
-                if(data.type === 'message') {
-                    setMessages((prev) => [...prev, `${data.from}: ${data.message}`])
-                    setOnlineUsers(data.users);
-                } else if(data.type === 'system') {
-                    setMessages(prev => [...prev, `🔔 ${data.message}`])
-                } else if(data.type === 'typing-update') {
-                    setTypingUsers(data.typingUsers);
-                }
-            };
-
-            socket.onclose = () => {
-                console.log('❌ Disconnected');
-                setConnected(false);
-            };
-
-            ws.current = socket;
-        }
-
-        return () => {
-            ws.current?.close();
-        };
-    }, [token]);
-
-    const handleInputChange = (e) => {
-        setMessageInput(e.target.value);
-        socketRef.current?.send({ type: 'typing', typing: true });
         clearTimeout(window.typingTimeout);
         window.typingTimeout = setTimeout(() => {
-            socketRef.current?.send({ type: 'typing', typing: false });
+            socketRef.current?.send(JSON.stringify({ type: 'typing', typing: false }));
         }, 1000);
-    }
-
-
-    const sendMessage = () => {
-        if (ws.current && ws.current.readyState === WebSocket.OPEN) {
-            ws.current.send(messageInput);
-            setMessageInput('');
-        }
     };
 
+    if (!connected) {
+        return (
+            <div className="p-4">
+                <h2>Enter username to join chat</h2>
+                <input value={username} onChange={(e) => setUsername(e.target.value)} />
+                <button onClick={handleJoin}>Join</button>
+            </div>
+        );
+    }
+
     return (
-        <div style={{ padding: '2rem' }}>
-            <h2>🗨️ WebSocket Chat</h2>
-
-            {!token ? (
-                <div>
-                    <input
-                        placeholder="Enter username"
-                        value={username}
-                        onChange={e => setUsername(e.target.value)}
-                    />
-                    <button onClick={login}>Login</button>
-                </div>
-            ) : (
-                    <>
-                        <div>
-                            <strong>Connected as:</strong> {username}
-                        </div>
-
-                        <div style={{ marginTop: '1rem' }}>
-                            <input
-                                placeholder="Type a message"
-                                value={messageInput}
-                                onChange={handleInputChange}
-                            />
-                            <button onClick={sendMessage}>Send</button>
-                        </div>
-
-                        <div style={{ marginTop: '2rem' }}>
-                            <h3>Messages:</h3>
-                            <div style={{ background: '#000', padding: '1rem' }}>
-                                {messages.map((msg, i) => (
-                                    <div key={i}>{msg}</div>
-                                ))}
-                            </div>
-                        </div>
-                        <div>
-                            <h3>Online Users:</h3>
-                            <ul>
-                                {
-                                    onlineUsers.map((user, i) => (
-                                        <li key={i}>
-                                            {user}
-                                        </li>
-                                    ))
-                                }
-                            </ul>
-                        </div>
-                        <div>
-                            <h3>Users Typing: </h3>
-                            {
-                                typingUsers?.length > 0 && (
-                                <div>
-                                    {typingUsers.join(', ')} typing...
-                                </div>
-                                )
-                            }
-                        </div>
-                    </>
-                )}
+        <div className="p-4">
+            <h2>Welcome, {username}</h2>
+            <p>Connected users: {users.join(', ')}</p>
+            {typingUser && <p>✏️ {typingUser} is typing...</p>}
+            <div style={{ border: '1px solid #ccc', padding: '1rem', height: '300px', overflowY: 'scroll' }}>
+                {socketMessages.map((msg, idx) => (
+                    <div key={idx}>{msg}</div>
+                ))}
+            </div>
+            <input value={input} onChange={handleTyping} onKeyDown={(e) => e.key === 'Enter' && handleSend()} />
+            <button onClick={handleSend}>Send</button>
         </div>
     );
 }
 
-export default App;

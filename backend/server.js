@@ -1,113 +1,80 @@
+// server.js
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
 const cors = require('cors');
-const jwt = require('jsonwebtoken');
-const { log } = require('console');
-const { parse } = require('path');
-require('dotenv').config()
+const crypto = require('crypto');
 
-// Setup express
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-const JWT_SECRET_KEY = process.env.JWT_SECRET_KEY || 'hallelujah';
+const clients = new Map(); // Map of userId => { username, socket }
 
-app.post('/login', (req, res) => {
+app.post('/connect', (req, res) => {
     const { username } = req.body;
+    if (!username) return res.status(400).json({ error: 'Username required' });
 
-    if(!username) {
-        return res.status(400).json({error: 'username is required!'})
-    }
-
-    const token = jwt.sign({username}, JWT_SECRET_KEY, {expiresIn: '1h'});
-
-    res.status(200).json({ token });
-})
-
-
+    const id = crypto.randomUUID();
+    res.json({ id });
+});
 
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-const clients = new Map();
+function broadcast(data, exceptId = null) {
+    for (const [clientId, client] of clients.entries()) {
+        if (client.socket.readyState === WebSocket.OPEN && clientId !== exceptId) {
+            client.socket.send(JSON.stringify(data));
+        }
+    }
+}
 
-// {
-//     "sonu": SocketObj1,
-//     "purple": SocketObj2
-// }
-
-// 0 <--  somecunt
-// 1
-// 2
-// 3
+function getUserList() {
+    return Array.from(clients.values()).map((client) => client.username);
+}
 
 wss.on('connection', (socket, req) => {
-    const url = new URL(req.url, `http://${req.headers.host}`)
-    const token = url.searchParams.get('token');
+    let userId = null;
 
-    if(!token) {
-        socket.close(1008, 'Token required');
-        return;
-    }
-
-    let username;
-    try {
-        const decoded = jwt.verify(token, JWT_SECRET_KEY);
-        username = decoded.username;
-        clients.set(username, { socket, isTyping: false });
-        socket.username = username;
-        console.log(`${username} connected!`);
-    } catch (error) {
-        socket.close(1008, 'Invalid token!');
-        return;
-    }
     socket.on('message', (msg) => {
-        const parsed = JSON.parse(msg);
+        const data = JSON.parse(msg);
 
-        if(parsed.type === 'typing') {
-            const client = clients.get(socket.username);
-            if(client) 
-                client.isTyping = parsed.isTyping;
-            // Broadcast Typing status to all 
-            const typingUsers = Array.from(clients.entries())
-            .filter(([_, c]) => c.isTyping)
-            .map(([username]) => username);
+        if (data.type === 'init') {
+            userId = data.id;
+            const username = data.username;
 
-            for(const {socket: s} of clients.values()) {
-                s.send(JSON.stringify({type: 'typing-update', typingUsers}))
-            }
-        } else if(parsed.type === 'message') {
-            const payload = {
-                type: 'message',
-                from: socket.username,
-                message: parsed.message,
-                users: Array.from(clients.keys())
-            }
-            for(const {socket: s} of clients.values()) {
-                s.send(JSON.stringify(payload));
-            }
+            if (!userId || !username) return;
+
+            clients.set(userId, { username, socket });
+
+            broadcast({ type: 'user-joined', username, users: getUserList() }, userId);
+            console.log(`User joined: ${username}`);
+        }
+
+        if (data.type === 'message') {
+            const sender = clients.get(userId)?.username;
+            broadcast({ type: 'message', from: sender, text: data.text });
+        }
+
+        if (data.type === 'typing') {
+            const sender = clients.get(userId)?.username;
+            broadcast({ type: 'typing', from: sender, isTyping: data.typing }, userId);
         }
     });
-
-
-    function broadcastSystemMessage(msg) {
-        for(const {socket: s} of clients.values()) {
-            s.send(JSON.stringify({type: 'system', message: msg}));
-        }
-    }
 
     socket.on('close', () => {
-        clients.delete(socket.username);
-        broadcastSystemMessage(`${socket.username} has left the chat!`);
-        console.log(`Client disconnected: ${username}`);
+        if (userId && clients.has(userId)) {
+            const username = clients.get(userId).username;
+            clients.delete(userId);
+            broadcast({ type: 'user-left', username, users: getUserList() });
+            console.log(`User left: ${username}`);
+        }
     });
-
-    broadcastSystemMessage(`${socket.username} has joined the chat!`);
 });
 
 const PORT = 4000;
 server.listen(PORT, () => {
-    console.log(`Server running at http://localhost:${PORT}`);
+    console.log(`Server running on http://localhost:${PORT}`);
 });
+
